@@ -411,10 +411,11 @@ fn dialog_header(
     let h = if subtitle.is_empty() { 42.0 } else { 46.0 };
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
-    let c = rect.center();
-    ui.painter().circle_filled(c, 20.0, icon_bg);
+    // 图标固定在左侧（不是行的水平中心），文字整体右移让开图标
+    let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
+    ui.painter().circle_filled(icon_c, 20.0, icon_bg);
     ui.painter().text(
-        c,
+        icon_c,
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(19.0),
@@ -424,7 +425,7 @@ fn dialog_header(
     let title_font = egui::FontId::proportional(16.0);
     if subtitle.is_empty() {
         ui.painter().text(
-            egui::pos2(x, c.y),
+            egui::pos2(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
             title,
             title_font,
@@ -1313,7 +1314,21 @@ impl eframe::App for App {
                         ui.label(egui::RichText::new("v1.0").size(12.5).color(C_TEXT_SEC));
                     });
 
-                    ui.add_space(18.0);
+                    ui.add_space(10.0);
+
+                    // 一句话简介
+                    ui.vertical_centered(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("MAME MESS 软件列表汉化工具")
+                                    .size(13.0)
+                                    .color(C_TEXT_SEC),
+                            )
+                            .wrap(),
+                        );
+                    });
+
+                    ui.add_space(16.0);
 
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                         dialog_card(egui::Color32::from_rgb(250, 250, 252), Some(C_BORDER)).show(
@@ -1334,11 +1349,9 @@ impl eframe::App for App {
                                 ui.add_space(8.0);
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(
-                                            "如有任何问题，请通过公众号与我私信联系，看到后将第一时间答复。",
-                                        )
-                                        .size(12.5)
-                                        .color(C_TEXT_SEC),
+                                        egui::RichText::new("如有任何问题，欢迎通过公众号发信息与我联系。")
+                                            .size(12.5)
+                                            .color(C_TEXT_SEC),
                                     )
                                     .wrap(),
                                 );
