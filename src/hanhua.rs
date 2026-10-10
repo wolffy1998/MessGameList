@@ -287,6 +287,71 @@ pub fn write_mess_list(path: &str, items: &[(String, String)]) -> Result<(), Str
     std::fs::write(path, out.as_bytes()).map_err(string_err)
 }
 
+/// 自然序（natural order）比较：数字片段按数值比较，其余按忽略大小写的字典序。
+///
+/// 这样 `snes__s2` 会排在 `snes__s10` 前面，而不是纯字典序里的 `s10` 在前。
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                if x.is_ascii_digit() && y.is_ascii_digit() {
+                    let na = take_digits(&mut ai);
+                    let nb = take_digits(&mut bi);
+                    // 先按数值比（去前导零后比位数、再比字典序，避免解析溢出）
+                    let ta = na.trim_start_matches('0');
+                    let tb = nb.trim_start_matches('0');
+                    let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                    // 数值相同但写法不同（如 s02 与 s2）：按原始数字串再比一次，
+                    // 保证是全序而不是等价关系，排序结果稳定可预期
+                    if na != nb {
+                        return na.cmp(&nb);
+                    }
+                } else {
+                    let lx = lower_ascii(x);
+                    let ly = lower_ascii(y);
+                    if lx != ly {
+                        return lx.cmp(&ly);
+                    }
+                    ai.next();
+                    bi.next();
+                }
+            }
+        }
+    }
+}
+
+/// 取出连续的 ASCII 数字
+fn take_digits<I: Iterator<Item = char>>(iter: &mut std::iter::Peekable<I>) -> String {
+    let mut s = String::new();
+    while let Some(&c) = iter.peek() {
+        if c.is_ascii_digit() {
+            s.push(c);
+            iter.next();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn lower_ascii(c: char) -> char {
+    c.to_ascii_lowercase()
+}
+
+/// 按第一列（key）自然序排序整个 mess.list
+pub fn sort_mess_list(items: &mut Vec<(String, String)>) {
+    items.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+}
+
 /// 由文件名（去掉 .xml 扩展名）与 name 属性生成 mess.list 第一列
 /// 格式：stem__name（双下划线分隔）
 pub fn make_key(file_name: &str, name: &str) -> String {
@@ -374,6 +439,64 @@ mod tests {
         assert!(contains_cjk("冒险+"));
         assert!(!contains_cjk("Adventure +"));
         assert_eq!(sanitize_field("a\tb\r\nc"), "a b c");
+    }
+
+    #[test]
+    fn natural_sort_orders_keys() {
+        let mut items: Vec<(String, String)> = [
+            "snes__s10",
+            "snes__s2",
+            "snes__s1",
+            "snes__abc",
+            "a2600__zzz",
+            "A2600__AAA",
+            "snes__s02",
+        ]
+        .iter()
+        .map(|k| (k.to_string(), String::new()))
+        .collect();
+        sort_mess_list(&mut items);
+        let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "A2600__AAA",
+                "a2600__zzz",
+                "snes__abc",
+                "snes__s1",
+                "snes__s02",
+                "snes__s2",
+                "snes__s10",
+            ]
+        );
+    }
+
+    #[test]
+    fn mess_list_is_written_sorted() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("mess_test_sorted.list");
+        let mut items: Vec<(String, String)> = [
+            ("snes__s10", "十"),
+            ("snes__s2", "二"),
+            ("a2600__pacman", "吃豆人"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        sort_mess_list(&mut items);
+        write_mess_list(path.to_str().unwrap(), &items).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "a2600__pacman\t吃豆人",
+                "snes__s2\t二",
+                "snes__s10\t十",
+            ]
+        );
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

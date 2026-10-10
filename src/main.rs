@@ -273,6 +273,8 @@ impl App {
                 ));
             }
         }
+        // 全部行按 key 自然序排序后写出
+        hanhua::sort_mess_list(&mut all_items);
         match hanhua::write_mess_list(&self.mess_lst_path, &all_items) {
             Ok(()) => {
                 let exported = all_items.iter().filter(|(k, _)| k.starts_with(&prefix)).count();
@@ -795,15 +797,9 @@ impl eframe::App for App {
                             ui.add_space(10.0);
                             if self.xml_files.is_empty() {
                                 ui.label(
-                                    egui::RichText::new("请将程序放在包含 hash/ 文件夹的目录下")
+                                    egui::RichText::new("未找到 hash 目录，或其中没有 XML 软件列表")
                                         .size(14.0)
                                         .color(C_TEXT_SEC),
-                                );
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new("hash/ 文件夹中应包含 MAME 的 XML 软件列表")
-                                        .size(12.0)
-                                        .color(C_TEXT_MUTED),
                                 );
                             } else {
                                 ui.label(
@@ -812,6 +808,58 @@ impl eframe::App for App {
                                         .color(C_TEXT_SEC),
                                 );
                             }
+
+                            ui.add_space(16.0);
+
+                            // 放置方式提示卡片
+                            dialog_card(
+                                egui::Color32::from_rgb(250, 250, 252),
+                                Some(C_BORDER),
+                            )
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new("📌 请将本程序放在 mame.exe 同级目录下运行")
+                                            .size(13.0)
+                                            .color(C_TEXT),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(
+                                            "该目录下必须包含 MAME 的 hash 文件夹，里面是各个平台的 *.xml 软件列表。",
+                                        )
+                                        .size(12.5)
+                                        .color(C_TEXT_SEC),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add_space(6.0);
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned();
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("当前工作目录：{cwd}"))
+                                            .size(11.5)
+                                            .color(C_TEXT_MUTED)
+                                            .monospace(),
+                                    )
+                                    .truncate(),
+                                );
+                            });
+
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "共扫描到 {} 个 XML 列表",
+                                    self.xml_files.len()
+                                ))
+                                .size(11.5)
+                                .color(C_TEXT_MUTED),
+                            );
                         });
                     });
                     return;
