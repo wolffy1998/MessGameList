@@ -129,6 +129,133 @@ cargo clippy               # 静态检查
 
 ---
 
+## 构建指南（Windows）
+
+Rust 自身不含 C 代码，但**生成 `.exe` 必须调用系统链接器**。Windows 上有两条路线，**二选一即可，不需要同时配置**。
+
+### 先确认你用的是哪条路线
+
+```powershell
+rustc -vV | Select-String host
+```
+
+输出 `host: x86_64-pc-windows-msvc` → 走 MSVC 路线；
+输出 `host: x86_64-pc-windows-gnu` → 走 GNU 路线。
+
+> ⚠️ **关键概念**：用哪条路线由 **Rust 工具链本身**决定，**不会**因为你 PATH 里有 `cl.exe` 就自动改用 MSVC。
+> 反过来，PATH 里有 `gcc.exe` 也不会让 MSVC 工具链改用 GCC。两者互不影响。
+
+### 方案 A：GNU 路线（MinGW / MSYS2）
+
+不需要 Visual Studio，只装一个 C 编译器即可。
+
+**1. 安装 MinGW-w64（任选其一）**
+
+```powershell
+# 方式 1：scoop（会自动配置 PATH）
+scoop install rust-gnu mingw
+
+# 方式 2：MSYS2（已装的话只需确保 gcc 在 PATH）
+#   C:\msys64\ucrt64\bin 或 C:\msys64\mingw64\bin
+
+# 方式 3：手动安装后自行把 <mingw>\bin 加入系统 PATH
+```
+
+**2. 验证 gcc 可用**
+
+```powershell
+gcc --version
+```
+
+**3. 直接编译 —— 无需任何额外配置**
+
+```powershell
+cargo build --release
+```
+
+Rust 的 GNU 目标默认链接器就叫 `cc`，它按名字去 **PATH** 里找 `gcc.exe`，再由 gcc 调 `ld.exe`。
+只要 `gcc` 在 PATH 上就能编译，**不需要写 `.cargo\config.toml`，不需要配置任何环境变量**。
+
+### 方案 B：MSVC 路线（Visual Studio / Build Tools）
+
+**1. 安装 Rust（rustup 默认装 MSVC 工具链）**
+
+```powershell
+winget install Rustlang.Rustup
+# 或从 https://rustup.rs 下载
+```
+
+**2. 安装 Visual Studio Build Tools**
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools
+```
+
+安装时勾选工作负载：**使用 C++ 的桌面开发**。
+
+**3. 验证**
+
+```powershell
+rustc -vV | Select-String host   # 应显示 x86_64-pc-windows-msvc
+```
+
+MSVC 路线下**完全不需要 GCC / MinGW / MSYS2**。
+
+### 常见问题
+
+| 报错 | 原因 | 解决 |
+| --- | --- | --- |
+| `linker \`cc\` not found` | PATH 里没有 gcc | 把 MinGW 的 `bin` 目录加入 PATH |
+| `linker \`link.exe\` not found` | 装了 MSVC 工具链但没装 Build Tools | 补装 VS Build Tools 的 C++ 桌面开发 |
+| `cannot find -lmingwex` 等 | MinGW 版本过旧 | 升级 MinGW-w64 |
+| VS 提示缺少 `libcmt.lib` | 只装了 IDE 没装 C++ 工具链 | 补装 C++ 桌面开发工作负载 |
+| 编译报 ABI 错误 | 工具链与依赖预编译产物不匹配 | `cargo clean` 后重新编译 |
+
+### 依赖管理
+
+依赖存放在**全局本地仓库** `~/.cargo/registry`，**不会**复制进项目目录：
+
+```
+~/.cargo/registry/cache/   下载的 .crate 压缩包（跨项目共享）
+~/.cargo/registry/src/     解压后的 crate 源码
+项目/target/               仅存放编译产物
+```
+
+- `Cargo.lock` 已提交，任何人 clone 后编译得到的依赖版本完全一致
+- 缓存命中后**不再联网**，可离线构建：`cargo build --release --offline`
+- 常用排查命令：
+
+```bash
+cargo tree --depth 1        # 只看直接依赖
+cargo tree -i eframe        # 查某个包为什么被引入
+cargo update               # 主动升级依赖版本
+cargo vendor               # 把依赖复制进项目 vendor/（离线/内网构建）
+```
+
+### 关于产物
+
+生成的 exe **静态链接**，运行时不需要任何第三方运行库：
+
+- 45 个 PE 静态导入全部是 Windows 自带 DLL（`kernel32` / `user32` / `gdi32` / UCRT 等）
+- 无 `libgcc` / `libstdc++` / `vcruntime140` 等依赖
+- `d3d12` / `dxgi` / `vulkan-1` / `opengl32` 由 wgpu 在运行时动态加载，也是系统自带
+- **最低系统要求：Windows 10**
+
+若目标系统缺少 DX12 组件，可强制切换渲染后端：
+
+```powershell
+$env:WGPU_BACKEND = "gl"   # 可选 gl / dx12 / vulkan
+```
+
+如需连 UCRT 都不依赖的单文件版本：
+
+```powershell
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+cargo build --release
+```
+
+---
+
 ## 注意事项
 
 - 写入 XML 会**直接修改源文件且不可撤销**，建议先用「导出 mess.lst」备份

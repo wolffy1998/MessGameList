@@ -548,7 +548,8 @@ fn dialog_buttons(
             }
             ui.add_space(8.0);
         }
-        if ui.add(dialog_btn(secondary, BtnKind::Secondary)).clicked() {
+        // secondary 传空串时不绘制，避免出现一个没有文字的空白按钮
+        if !secondary.is_empty() && ui.add(dialog_btn(secondary, BtnKind::Secondary)).clicked() {
             action = DialogAction::Secondary;
         }
     });
@@ -1318,19 +1319,23 @@ impl eframe::App for App {
                         dialog_card(egui::Color32::from_rgb(250, 250, 252), Some(C_BORDER)).show(
                             ui,
                             |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new("专为 MAME MESS 软件列表汉化设计。")
-                                            .size(13.0)
-                                            .color(C_TEXT),
-                                    )
-                                    .wrap(),
-                                );
-                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new("联系方式").size(12.5).color(C_TEXT_SEC),
+                                    ));
+                                    ui.add_space(10.0);
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new("公众号：红白机时空舱")
+                                            .size(14.0)
+                                            .color(C_ACCENT)
+                                            .strong(),
+                                    ));
+                                });
+                                ui.add_space(8.0);
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(
-                                            "浏览 XML 列表、编辑 Rename、置顶/还原条目、导入导出 mess.lst、写入 XML。",
+                                            "如有任何问题，请通过公众号与我私信联系，看到后将第一时间答复。",
                                         )
                                         .size(12.5)
                                         .color(C_TEXT_SEC),
