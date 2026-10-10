@@ -3,6 +3,7 @@
 //! 处理 XML 软件列表的解析与写回、mess.list 的读写。
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 
 use encoding_rs;
@@ -82,10 +83,63 @@ pub fn escape_xml(s: &str) -> String {
     out
 }
 
+/// 去掉文本末尾括号内的补充信息。
+///
+/// `"NUS-64卡带检验 (日本)"` → `"NUS-64卡带检验"`
+/// 同时兼容全角括号 `"（日本）"`；只处理结尾的一组括号。
+/// 若去掉后为空（整串就是括号），则原样返回，避免写入空标题。
+pub fn strip_trailing_parenthetical(s: &str) -> String {
+    let t = s.trim_end();
+    let chars: Vec<char> = t.chars().collect();
+    let Some(&last) = chars.last() else {
+        return String::new();
+    };
+    let open = match last {
+        ')' => '(',
+        '）' => '（',
+        _ => return t.to_string(),
+    };
+    // 从后往前找配对的左括号（不处理嵌套，只取最后一组）
+    let open_idx = chars[..chars.len() - 1]
+        .iter()
+        .rposition(|&c| c == open)
+        .map(|i| i);
+    let Some(i) = open_idx else { return t.to_string() };
+    let head: String = chars[..i].iter().collect();
+    let head = head.trim_end();
+    if head.is_empty() {
+        return t.to_string();
+    }
+    head.to_string()
+}
+
+/// 从 `name="value"` 形式的属性区间中，取出 **value 引号内部** 的字节区间。
+/// 用于只替换属性值本身，保留引号风格、空格等其他格式。
+fn attr_value_range(text: &str, attr_range: Range<usize>) -> Option<(usize, usize)> {
+    let slice = text.get(attr_range.clone())?;
+    let eq = slice.find('=')?;
+    let after = &slice[eq + 1..];
+    let trimmed = after.trim_start();
+    let lead = after.len() - trimmed.len();
+    let quote = trimmed.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let body = &trimmed[quote.len_utf8()..];
+    // XML 属性值内的引号必须转义，所以遇到的第一个同种引号即为结束位置
+    let end_rel = body.find(quote)?;
+    let start = attr_range.start + eq + 1 + lead + quote.len_utf8();
+    let end = start + end_rel;
+    text.get(start..end)?;
+    Some((start, end))
+}
+
 /// 把汉化内容写回 XML 文件。
 ///
 /// `translations` 的 key 为 software 的 name 属性，value 为汉化文本。
 /// 仅替换 `<description>` 节点的文本，保留文件其余字节不变。
+/// 若 software 下存在 `<info name="alt_title" value="…"/>`，会同步把 value
+/// 更新为 description 去掉末尾括号后的文本。
 /// 返回实际替换的条目数。
 pub fn write_translations(path: &str, translations: &HashMap<String, String>) -> Result<usize, String> {
     let mut content = std::fs::read(path).map_err(string_err)?;
@@ -102,6 +156,7 @@ pub fn write_translations(path: &str, translations: &HashMap<String, String>) ->
 
     // 收集 (起始偏移, 结束偏移, 新文本)，从后往前应用
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    let mut replaced = 0usize;
 
     for node in doc.descendants().filter(|n| n.has_tag_name("software")) {
         let Some(name) = node.attribute("name") else { continue };
@@ -115,9 +170,24 @@ pub fn write_translations(path: &str, translations: &HashMap<String, String>) ->
         let range = desc.range();
         let escaped = escape_xml(new_text);
         replacements.push((range.start, range.end, format!("<description>{escaped}</description>")));
+        replaced += 1;
+
+        // 同步 alt_title：value = description 去掉末尾括号后的文本
+        let alt_title = strip_trailing_parenthetical(new_text);
+        if alt_title != *new_text {
+            if let Some(info) = node
+                .children()
+                .find(|c| c.has_tag_name("info") && c.attribute("name") == Some("alt_title"))
+            {
+                if let Some(attr) = info.attributes().find(|a| a.name() == "value") {
+                    if let Some((vs, ve)) = attr_value_range(&text, attr.range()) {
+                        replacements.push((vs, ve, escape_xml(&alt_title)));
+                    }
+                }
+            }
+        }
     }
 
-    let replaced = replacements.len();
     replacements.sort_by_key(|r| std::cmp::Reverse(r.0));
     for (start, end, new) in replacements {
         text.replace_range(start..end, &new);
@@ -304,5 +374,92 @@ mod tests {
         assert!(contains_cjk("冒险+"));
         assert!(!contains_cjk("Adventure +"));
         assert_eq!(sanitize_field("a\tb\r\nc"), "a b c");
+    }
+
+    #[test]
+    fn strip_trailing_parenthetical_cases() {
+        // 题目中的真实场景
+        assert_eq!(
+            strip_trailing_parenthetical("NUS-64卡带检验 (日本)"),
+            "NUS-64卡带检验"
+        );
+        // 半角 / 全角括号
+        assert_eq!(strip_trailing_parenthetical("Adventure (USA)"), "Adventure");
+        assert_eq!(strip_trailing_parenthetical("冒险 （日本）"), "冒险");
+        // 只去掉结尾的一组
+        assert_eq!(
+            strip_trailing_parenthetical("Sonic (Japan) (Rev 1)"),
+            "Sonic (Japan)"
+        );
+        // 没有括号 / 括号未闭合 / 括号不在结尾 → 原样
+        assert_eq!(strip_trailing_parenthetical("冒险+"), "冒险+");
+        assert_eq!(strip_trailing_parenthetical("Sonic (Japan"), "Sonic (Japan");
+        assert_eq!(strip_trailing_parenthetical("Sonic (Japan) rev1"), "Sonic (Japan) rev1");
+        // 整串就是括号时不能变空
+        assert_eq!(strip_trailing_parenthetical("(日本)"), "(日本)");
+        assert_eq!(strip_trailing_parenthetical(""), "");
+    }
+
+    const ALT_TITLE_XML: &str = r#"<?xml version="1.0"?>
+<softwarelist name="snes" description="SNES">
+	<software name="nus64cc" supported="partial">
+		<description>NUS-64卡带检验 (日本)</description>
+		<year>1997</year>
+		<info name="alt_title" value="NUS-64卡带检验"/>
+		<info name="id" value="n"/>
+	</software>
+	<software name="multi">
+		<description>Sonic (Japan) (Rev 1)</description>
+		<info name='alt_title' value = 'old' />
+	</software>
+	<software name="no_alt">
+		<description>No Info Node</description>
+	</software>
+</softwarelist>
+"#;
+
+    #[test]
+    fn write_syncs_alt_title() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("mess_test_alt_title.xml");
+        std::fs::write(&path, ALT_TITLE_XML).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert("nus64cc".to_string(), "NUS-64卡带检验 (日本)".to_string());
+        map.insert("multi".to_string(), "Sonic (Japan) (Rev 1)".to_string());
+        map.insert("no_alt".to_string(), "没有 info 节点".to_string());
+        let n = write_translations(path.to_str().unwrap(), &map).unwrap();
+        assert_eq!(n, 3);
+
+        let out = std::fs::read_to_string(&path).unwrap();
+
+        // description 写入 + alt_title 同步去掉尾部括号
+        assert!(out.contains(r#"<info name="alt_title" value="NUS-64卡带检验"/>"#), "{out}");
+        // 只去掉最后一组括号
+        assert!(out.contains(r#"<info name='alt_title' value = 'Sonic (Japan)' />"#), "{out}");
+        // 没有 alt_title 的条目不受影响
+        assert!(out.contains("<description>没有 info 节点</description>"), "{out}");
+        // 其他 info 节点不受影响
+        assert!(out.contains(r#"<info name="id" value="n"/>"#), "{out}");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn alt_title_skipped_when_no_parenthetical() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("mess_test_alt_title2.xml");
+        std::fs::write(&path, ALT_TITLE_XML).unwrap();
+
+        // 新文本没有括号 → alt_title 保持原值
+        let mut map = HashMap::new();
+        map.insert("nus64cc".to_string(), "全新译名".to_string());
+        write_translations(path.to_str().unwrap(), &map).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains(r#"<info name="alt_title" value="NUS-64卡带检验"/>"#), "{out}");
+        assert!(out.contains("<description>全新译名</description>"), "{out}");
+
+        std::fs::remove_file(&path).ok();
     }
 }
