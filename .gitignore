@@ -1,0 +1,17 @@
+# Rust 编译产物
+/target
+**/*.rs.bk
+
+# MAME 数据（体积大，且非本项目源码；请自行把 MAME 的 hash 目录放到这里）
+/hash/*
+!/hash/README.md
+
+# 本地汉化列表
+/mess.lst
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.log
+Thumbs.db
+desktop.ini

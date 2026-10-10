@@ -1,0 +1,11 @@
+[package]
+name = "mess-hanhua-tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36.2"
+egui_extras = "0.36.2"
+encoding_rs = "0.8.42"
+rfd = "0.17.2"
+roxmltree = "0.21.1"
