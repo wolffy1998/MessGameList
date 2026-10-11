@@ -119,97 +119,135 @@ MessGameList/
 
 ---
 
-## 开发
+## 构建与开发
 
-```bash
-cargo build --release      # 构建
-cargo test                 # 运行 hanhua.rs 单元测试
-cargo clippy               # 静态检查
-```
+### 常用命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `cargo build --release` | 构建发布版 |
+| `cargo run --release` | 直接运行 |
+| `cargo test` | 运行单元测试（`hanhua.rs`） |
+| `cargo clippy` | 静态检查 |
+| `cargo tree --depth 1` | 只看直接依赖 |
+| `cargo tree -i eframe` | 查某个包为什么被引入 |
+| `cargo update` | 升级依赖版本 |
+| `cargo vendor` | 把依赖复制进项目 `vendor/`（离线 / 内网构建） |
+| `cargo clean` | 清理 `target/` |
 
 ---
 
-## 构建指南（Windows）
+### 工具链：两条路线二选一
 
-Rust 自身不含 C 代码，但**生成 `.exe` 必须调用系统链接器**。Windows 上有两条路线，**二选一即可，不需要同时配置**。
+Rust 自身不含 C 代码，但**生成 `.exe` 必须调用系统链接器**。Windows 上两条路线**二选一即可，不需要同时配置**。
 
-### 先确认你用的是哪条路线
+先确认当前走哪条：
 
 ```powershell
 rustc -vV | Select-String host
 ```
 
-输出 `host: x86_64-pc-windows-msvc` → 走 MSVC 路线；
-输出 `host: x86_64-pc-windows-gnu` → 走 GNU 路线。
+| `host` 输出 | 链接器 | 需要安装 |
+| --- | --- | --- |
+| `x86_64-pc-windows-gnu` | `gcc.exe` → `ld.exe` | MinGW-w64 / MSYS2 |
+| `x86_64-pc-windows-msvc` | `link.exe` | Visual Studio / Build Tools |
 
-> ⚠️ **关键概念**：用哪条路线由 **Rust 工具链本身**决定，**不会**因为你 PATH 里有 `cl.exe` 就自动改用 MSVC。
-> 反过来，PATH 里有 `gcc.exe` 也不会让 MSVC 工具链改用 GCC。两者互不影响。
+> ⚠️ **用哪条路线由 Rust 工具链本身决定，与 PATH 上有什么无关。**
+> PATH 里有 `cl.exe` 不会让 GNU 工具链改用 MSVC；PATH 里有 `gcc.exe` 也不会让 MSVC 工具链改用 GCC。
 
-### 方案 A：GNU 路线（MinGW / MSYS2）
-
-不需要 Visual Studio，只装一个 C 编译器即可。
-
-**1. 安装 MinGW-w64（任选其一）**
+#### 路线 A：GNU（MinGW / MSYS2）
 
 ```powershell
-# 方式 1：scoop（会自动配置 PATH）
+# 安装（scoop 会自动配好 PATH）
 scoop install rust-gnu mingw
+# 或使用已安装的 MSYS2：C:\msys64\ucrt64\bin
 
-# 方式 2：MSYS2（已装的话只需确保 gcc 在 PATH）
-#   C:\msys64\ucrt64\bin 或 C:\msys64\mingw64\bin
-
-# 方式 3：手动安装后自行把 <mingw>\bin 加入系统 PATH
-```
-
-**2. 验证 gcc 可用**
-
-```powershell
-gcc --version
-```
-
-**3. 直接编译 —— 无需任何额外配置**
-
-```powershell
+gcc --version        # 验证
 cargo build --release
 ```
 
-Rust 的 GNU 目标默认链接器就叫 `cc`，它按名字去 **PATH** 里找 `gcc.exe`，再由 gcc 调 `ld.exe`。
-只要 `gcc` 在 PATH 上就能编译，**不需要写 `.cargo\config.toml`，不需要配置任何环境变量**。
+`gcc` 在 PATH 上就能编译，不需要任何配置文件。
 
-### 方案 B：MSVC 路线（Visual Studio / Build Tools）
-
-**1. 安装 Rust（rustup 默认装 MSVC 工具链）**
+#### 路线 B：MSVC（Visual Studio / Build Tools）
 
 ```powershell
-winget install Rustlang.Rustup
-# 或从 https://rustup.rs 下载
+winget install Rustlang.Rustup                      # rustup 默认装 MSVC 工具链
+winget install Microsoft.VisualStudio.2022.BuildTools   # 勾选「使用 C++ 的桌面开发」
+cargo build --release
 ```
 
-**2. 安装 Visual Studio Build Tools**
+此路线**完全不需要 GCC / MinGW / MSYS2**。
+
+---
+
+### gcc 不在 PATH 时，如何单独指定路径
+
+若 MinGW 已安装但 `bin` 目录没进 PATH（`cargo build` 报 `linker \`cc\` not found`），以下四种方式任选，**按优先级从高到低**：
+
+#### 1️⃣ `RUSTFLAGS` 环境变量（优先级最高，对当前终端生效）
 
 ```powershell
-winget install Microsoft.VisualStudio.2022.BuildTools
+$env:RUSTFLAGS = "-C linker=C:\mingw64\bin\gcc.exe"
+cargo build --release
 ```
 
-安装时勾选工作负载：**使用 C++ 的桌面开发**。
-
-**3. 验证**
+#### 2️⃣ `CARGO_TARGET_<TRIPLE>_LINKER` 环境变量
 
 ```powershell
-rustc -vV | Select-String host   # 应显示 x86_64-pc-windows-msvc
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "C:\mingw64\bin\gcc.exe"
+cargo build --release
 ```
 
-MSVC 路线下**完全不需要 GCC / MinGW / MSYS2**。
+#### 3️⃣ Cargo 配置文件（推荐，可固化到项目里）
+
+**项目级**——新建 `.cargo\config.toml`，只影响本项目：
+
+```toml
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\mingw64\\bin\\gcc.exe"
+# 可选：附加链接参数
+rustflags = ["-C", "link-arg=-static-libgcc"]
+```
+
+**用户级**——新建 `~/.cargo/config.toml`，对本机所有项目生效：
+
+```toml
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\mingw64\\bin\\gcc.exe"
+```
+
+> ⚠️ 配置文件里路径要用**双反斜杠** `\\`，或改用正斜杠 `/`（`C:/mingw64/bin/gcc.exe`）也能识别。
+> `.cargo/config.toml` 已在 `.gitignore` 中，不会提交到仓库，避免写死他人机器的路径。
+
+#### 4️⃣ 临时把目录加进当前终端的 PATH（最省事）
+
+```powershell
+$env:PATH += ";C:\mingw64\bin"
+cargo build --release
+```
+
+只对当前窗口有效；想永久生效可在「系统属性 → 环境变量」中添加。
+
+> **优先级**：`RUSTFLAGS` > `CARGO_TARGET_<TRIPLE>_LINKER` > `.cargo/config.toml`（项目级优先于用户级）> PATH 自动查找
+
+> MSVC 路线同理，通常直接在 **Developer PowerShell for VS** 中编译即可；也可手动指定：
+> ```powershell
+> $env:RUSTFLAGS = "-C linker=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\<版本号>\bin\Hostx64\x64\link.exe"
+> ```
+
+---
 
 ### 常见问题
 
 | 报错 | 原因 | 解决 |
 | --- | --- | --- |
-| `linker \`cc\` not found` | PATH 里没有 gcc | 把 MinGW 的 `bin` 目录加入 PATH |
-| `linker \`link.exe\` not found` | 装了 MSVC 工具链但没装 Build Tools | 补装 VS Build Tools 的 C++ 桌面开发 |
-| `cannot find -lmingwex` 等 | MinGW 版本过旧 | 升级 MinGW-w64 |
-| VS 提示缺少 `libcmt.lib` | 只装了 IDE 没装 C++ 工具链 | 补装 C++ 桌面开发工作负载 |
-| 编译报 ABI 错误 | 工具链与依赖预编译产物不匹配 | `cargo clean` 后重新编译 |
+| ``linker `cc` not found`` | PATH 里没有 gcc | 见上一节「单独指定路径」 |
+| ``linker `link.exe` not found`` | MSVC 工具链缺少 Build Tools | 补装 C++ 桌面开发工作负载 |
+| `cannot find -lmingwex` | MinGW 版本过旧 | 升级 MinGW-w64 |
+| 缺少 `libcmt.lib` | 只装了 IDE 没装 C++ 工具链 | 补装 C++ 桌面开发工作负载 |
+| 编译报 ABI 错误 | 工具链与已有预编译产物不匹配 | `cargo clean` 后重新编译 |
+
+---
 
 ### 依赖管理
 
@@ -223,20 +261,14 @@ MSVC 路线下**完全不需要 GCC / MinGW / MSYS2**。
 
 - `Cargo.lock` 已提交，任何人 clone 后编译得到的依赖版本完全一致
 - 缓存命中后**不再联网**，可离线构建：`cargo build --release --offline`
-- 常用排查命令：
 
-```bash
-cargo tree --depth 1        # 只看直接依赖
-cargo tree -i eframe        # 查某个包为什么被引入
-cargo update               # 主动升级依赖版本
-cargo vendor               # 把依赖复制进项目 vendor/（离线/内网构建）
-```
+---
 
 ### 关于产物
 
 生成的 exe **静态链接**，运行时不需要任何第三方运行库：
 
-- 45 个 PE 静态导入全部是 Windows 自带 DLL（`kernel32` / `user32` / `gdi32` / UCRT 等）
+- PE 静态导入全部是 Windows 自带 DLL（`kernel32` / `user32` / `gdi32` / UCRT 等）
 - 无 `libgcc` / `libstdc++` / `vcruntime140` 等依赖
 - `d3d12` / `dxgi` / `vulkan-1` / `opengl32` 由 wgpu 在运行时动态加载，也是系统自带
 - **最低系统要求：Windows 10**

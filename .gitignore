@@ -2,11 +2,9 @@
 /target
 **/*.rs.bk
 
-# MAME 数据目录（体积大，且非本项目源码；请自行把 MAME 的 hash 目录放到这里）
-/hash/
-
-# 本地汉化列表
-/mess.lst
+# 本机构建配置（含本机 gcc/linker 绝对路径，不应提交）
+.cargo/config.toml
+.cargo/config
 
 # 编辑器 / 系统
 .idea/
