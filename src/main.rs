@@ -30,6 +30,8 @@ const C_BG_ROW_B: egui::Color32   = egui::Color32::from_rgb(247, 247, 249);
 // 边框
 const C_BORDER: egui::Color32     = egui::Color32::from_rgb(218, 220, 224);
 const C_BORDER_STRONG: egui::Color32 = egui::Color32::from_rgb(180, 185, 190);
+// 工具栏次级按钮底色（固定，不随悬停变化）
+const C_BTN_BG: egui::Color32      = egui::Color32::from_rgb(230, 230, 230);
 // 状态栏
 const C_STATUS_OK_BG: egui::Color32 = egui::Color32::from_rgb(240, 248, 240);
 const C_STATUS_ERR_BG: egui::Color32 = egui::Color32::from_rgb(255, 245, 245);
@@ -327,7 +329,7 @@ impl App {
 }
 
 // ============================================================
-// 专业按钮样式
+// 主操作按钮（写入 XML）：固定底色 + 固定边框，悬停只看 hover_outline() 的外框
 // ============================================================
 fn btn_style(ui: &mut egui::Ui, text: impl Into<String>, is_danger: bool) -> egui::Response {
     let fill = if is_danger { C_DANGER } else { C_ACCENT };
@@ -336,7 +338,8 @@ fn btn_style(ui: &mut egui::Ui, text: impl Into<String>, is_danger: bool) -> egu
     ui.add(
         egui::Button::new(egui::RichText::new(text).color(text_color))
             .fill(fill)
-            .stroke(egui::Stroke::new(1.0, stroke)),
+            .stroke(egui::Stroke::new(1.0, stroke))
+            .corner_radius(5.0),
     )
 }
 
@@ -537,6 +540,14 @@ enum DialogAction {
     None,
 }
 
+/// 弹窗按钮的悬停外框配色
+fn btn_outline(kind: BtnKind) -> egui::Color32 {
+    match kind {
+        BtnKind::Danger => C_DANGER,
+        BtnKind::Primary | BtnKind::Secondary => C_ACCENT,
+    }
+}
+
 fn dialog_buttons(
     ui: &mut egui::Ui,
     primary: Option<(&str, BtnKind)>,
@@ -546,14 +557,20 @@ fn dialog_buttons(
     let mut action = DialogAction::None;
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if let Some((label, kind)) = primary {
-            if ui.add_enabled(primary_enabled, dialog_btn(label, kind)).clicked() {
+            let r = ui.add_enabled(primary_enabled, dialog_btn(label, kind));
+            hover_outline(ui, &r, btn_outline(kind));
+            if r.clicked() {
                 action = DialogAction::Primary;
             }
             ui.add_space(8.0);
         }
         // secondary 传空串时不绘制，避免出现一个没有文字的空白按钮
-        if !secondary.is_empty() && ui.add(dialog_btn(secondary, BtnKind::Secondary)).clicked() {
-            action = DialogAction::Secondary;
+        if !secondary.is_empty() {
+            let r = ui.add(dialog_btn(secondary, BtnKind::Secondary));
+            hover_outline(ui, &r, btn_outline(BtnKind::Secondary));
+            if r.clicked() {
+                action = DialogAction::Secondary;
+            }
         }
     });
     action
@@ -576,6 +593,43 @@ fn dialog_btn(text: &str, kind: BtnKind) -> egui::Button<'_> {
         .min_size(egui::vec2(92.0, 32.0))
 }
 
+// ============================================================
+// 统一按钮悬停反馈：外框，而不是下层底色
+// ============================================================
+/// 指针是否真的落在该控件的矩形内。
+///
+/// 这里刻意 **不用** `Response::hovered()`：当指针下方的控件被禁用时，egui 的命中
+/// 测试会退化成「找最近的可用控件」，把 hover 分配给旁边的按钮
+/// （`hit_test.rs` 的 `find_closest` 分支），于是悬停「写入 XML」时
+/// 「关于」也会被点亮。`contains_pointer()` 只做几何判断，绝不会顺延到邻居。
+fn pointer_over(response: &egui::Response) -> bool {
+    response.contains_pointer()
+}
+
+/// 悬停反馈：在控件外侧描一圈边框。
+///
+/// 全程序只有这一种悬停/选中反馈：控件自身的底色、边框、圆角都是固定值，
+/// 不随悬停变化，从而杜绝 egui 默认 `hovered.bg_fill` 整块换色导致的串扰。
+fn hover_outline(ui: &egui::Ui, response: &egui::Response, color: egui::Color32) {
+    if !pointer_over(response) {
+        return;
+    }
+    ui.painter().rect_stroke(
+        response.rect.expand(1.5),
+        5.0,
+        egui::Stroke::new(1.5, color),
+        egui::StrokeKind::Middle,
+    );
+}
+
+/// 普通工具栏按钮（次级操作）：固定底色 + 固定边框，悬停只看 `hover_outline()` 的外框。
+fn toolbar_btn(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(C_TEXT))
+        .fill(C_BTN_BG)
+        .stroke(egui::Stroke::new(1.0, C_BORDER))
+        .corner_radius(5.0)
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // ---- 浅色全局视觉 ----
@@ -584,6 +638,16 @@ impl eframe::App for App {
         visuals.window_fill = C_BG_PANEL;
         visuals.widgets.noninteractive.bg_fill = C_BG_PANEL;
         visuals.widgets.inactive.bg_fill = C_BG_PANEL;
+        // 四种状态统一 1.0 边框宽度：egui 会用 bg_stroke.width 反推按钮内边距，
+        // 宽度不一致会让按钮在悬停时被撑大/挤动相邻按钮。
+        for w in [
+            &mut visuals.widgets.noninteractive,
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+        ] {
+            w.bg_stroke = egui::Stroke::new(1.0, C_BORDER);
+        }
         visuals.override_text_color = Some(C_TEXT);
         visuals.faint_bg_color = C_BG_ROW_B;
         visuals.extreme_bg_color = C_BG;
@@ -718,11 +782,15 @@ impl eframe::App for App {
                     let has_xml = self.selected_file.is_some() && !self.entries.is_empty();
 
                     // 置顶、还原
-                    if ui.add_enabled(has_xml, egui::Button::new("📌 置顶")).clicked() {
+                    let r = ui.add_enabled(has_xml, toolbar_btn("📌 置顶"));
+                    hover_outline(ui, &r, C_ACCENT);
+                    if r.clicked() {
                         self.pin_up();
                     }
                     ui.add_space(4.0);
-                    if ui.add_enabled(has_xml, egui::Button::new("↩ 还原")).clicked() {
+                    let r = ui.add_enabled(has_xml, toolbar_btn("↩ 还原"));
+                    hover_outline(ui, &r, C_ACCENT);
+                    if r.clicked() {
                         self.restore_order();
                     }
                     ui.add_space(8.0);
@@ -732,14 +800,18 @@ impl eframe::App for App {
                     ui.add_space(6.0);
 
                     // 导入 mess.lst
-                    if ui.add_enabled(has_xml, egui::Button::new("📥 导入 mess.lst")).clicked() {
+                    let r = ui.add_enabled(has_xml, toolbar_btn("📥 导入 mess.lst"));
+                    hover_outline(ui, &r, C_ACCENT);
+                    if r.clicked() {
                         self.preview_import();
                         self.confirm_import = true;
                     }
                     ui.add_space(4.0);
 
                     // 导出 mess.lst
-                    if ui.add_enabled(has_xml, egui::Button::new("📤 导出 mess.lst")).clicked() {
+                    let r = ui.add_enabled(has_xml, toolbar_btn("📤 导出 mess.lst"));
+                    hover_outline(ui, &r, C_ACCENT);
+                    if r.clicked() {
                         self.preview_export();
                         self.confirm_export = true;
                     }
@@ -750,31 +822,26 @@ impl eframe::App for App {
                     ui.add_space(6.0);
 
                     // 写入XML（蓝色强调按钮，无 XML 时禁用）
-                    let mut clicked_write = false;
-                    ui.add_enabled_ui(has_xml, |ui| {
-                        clicked_write = btn_style(ui, "💾 写入 XML", false).clicked();
-                    });
-                    if clicked_write {
-                            self.confirm_write = true;
-                        }
+                    let write_resp = ui
+                        .add_enabled_ui(has_xml, |ui| btn_style(ui, "💾 写入 XML", false))
+                        .inner;
+                    hover_outline(ui, &write_resp, C_ACCENT);
+                    if write_resp.clicked() {
+                        self.confirm_write = true;
+                    }
 
-                        // 右侧分割线 + 关于
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(6.0);
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("关于").color(C_TEXT))
-                                    .fill(egui::Color32::from_rgb(245, 245, 245))
-                                    .stroke(egui::Stroke::new(1.0, C_BORDER)),
-                            )
-                            .clicked()
-                        {
-                            self.show_about_dialog = true;
-                        }
-                    });
+                    // 右侧分割线 + 关于
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    let about_resp = ui.add(toolbar_btn("关于"));
+                    hover_outline(ui, &about_resp, C_ACCENT);
+                    if about_resp.clicked() {
+                        self.show_about_dialog = true;
+                    }
                 });
             });
+        });
 
         // ============================================================
         // 中央表格 — 专业级美化
@@ -1359,6 +1426,112 @@ impl eframe::App for App {
                 self.show_about_dialog = false;
             }
         }
+    }
+}
+
+// ============================================================
+// 回归测试：悬停反馈（外框）的判定必须只命中指针真正所在的那个按钮
+//
+// 背景：egui 命中测试在「指针下方的控件被禁用」时会退化成「找最近的可用控件」
+// （hit_test.rs 的 find_closest 分支），把 Response::hovered() 分配给相邻按钮，
+// 于是悬停「写入 XML」时「关于」也会亮起。
+// 本修复改用 contains_pointer()（纯几何判断）来画外框，
+// 因此这里锁定的不变量是：任意时刻只有一个按钮 contains_pointer == true。
+// ============================================================
+#[cfg(test)]
+mod hover_outline_test {
+    use super::*;
+
+    /// 与顶部工具栏保持同构的控件序列
+    fn build_toolbar(ui: &mut egui::Ui, has_xml: bool) -> Vec<(&'static str, egui::Response)> {
+        let mut probes: Vec<(&'static str, egui::Response)> = Vec::new();
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new("XML 列表").size(11.5));
+            ui.add_space(4.0);
+            egui::ComboBox::from_id_salt("xml_combo")
+                .width(122.0)
+                .selected_text("请选择...")
+                .show_ui(ui, |_ui| {});
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            probes.push(("置顶", ui.add_enabled(has_xml, toolbar_btn("📌 置顶"))));
+            ui.add_space(4.0);
+            probes.push(("还原", ui.add_enabled(has_xml, toolbar_btn("↩ 还原"))));
+            ui.add_space(4.0);
+            probes.push((
+                "导入",
+                ui.add_enabled(has_xml, toolbar_btn("📥 导入 mess.lst")),
+            ));
+            ui.add_space(4.0);
+            probes.push((
+                "导出",
+                ui.add_enabled(has_xml, toolbar_btn("📤 导出 mess.lst")),
+            ));
+            ui.add_space(4.0);
+            let write = ui
+                .add_enabled_ui(has_xml, |ui| btn_style(ui, "💾 写入 XML", false))
+                .inner;
+            probes.push(("写入XML", write));
+            ui.add_space(4.0);
+            probes.push(("关于", ui.add(toolbar_btn("关于"))));
+        });
+        probes
+    }
+
+    fn run_frame(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        has_xml: bool,
+    ) -> Vec<(&'static str, egui::Response)> {
+        let out = std::cell::RefCell::new(Vec::<(&'static str, egui::Response)>::new());
+        let _ = ctx.run_ui(input, |ui| {
+            *out.borrow_mut() = build_toolbar(ui, has_xml);
+        });
+        out.into_inner()
+    }
+
+    fn input_with_pointer(pos: egui::Pos2) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events = vec![egui::Event::PointerMoved(pos)];
+        input
+    }
+
+    /// 指针依次落在每个按钮上（包括按钮之间的空隙），
+    /// 断言任一时刻至多只有一个按钮会被画外框。
+    fn assert_hover_isolated(has_xml: bool) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+
+        let frame1 = run_frame(&ctx, egui::RawInput::default(), has_xml);
+        let targets: Vec<(&'static str, egui::Rect)> =
+            frame1.iter().map(|(n, r)| (*n, r.rect)).collect();
+
+        for (name, rect) in targets {
+            let probes = run_frame(&ctx, input_with_pointer(rect.center()), has_xml);
+
+            let lit: Vec<&str> = probes
+                .iter()
+                .filter(|(_, r)| pointer_over(r))
+                .map(|(n, _)| *n)
+                .collect();
+            assert!(
+                lit.len() <= 1,
+                "指针在「{name}」上时，外框却画到了 {lit:?}（has_xml={has_xml}）"
+            );
+            assert!(
+                !lit.iter().any(|n| *n == "关于" && name != "关于"),
+                "指针在「{name}」上时，「关于」被误高亮（has_xml={has_xml}）"
+            );
+        }
+    }
+
+    #[test]
+    fn hover_outline_never_leaks_to_neighbor_buttons() {
+        // 未选择 XML：除「关于」外全部禁用——这正是原 bug 触发的状态
+        assert_hover_isolated(false);
+        // 已选择 XML：全部可用
+        assert_hover_isolated(true);
     }
 }
 
