@@ -30,7 +30,7 @@ const C_BG_ROW_B: egui::Color32   = egui::Color32::from_rgb(247, 247, 249);
 // 边框
 const C_BORDER: egui::Color32     = egui::Color32::from_rgb(218, 220, 224);
 const C_BORDER_STRONG: egui::Color32 = egui::Color32::from_rgb(180, 185, 190);
-// 工具栏次级按钮底色（固定，不随悬停变化）
+// 工具栏次级按钮底色（置顶/还原/导入/导出/关于共用同一个值，保证外观完全一致）
 const C_BTN_BG: egui::Color32      = egui::Color32::from_rgb(230, 230, 230);
 // 状态栏
 const C_STATUS_OK_BG: egui::Color32 = egui::Color32::from_rgb(240, 248, 240);
@@ -822,15 +822,16 @@ impl eframe::App for App {
                     ui.add_space(6.0);
 
                     // 写入XML（蓝色强调按钮，无 XML 时禁用）
+                    // 刻意不加任何悬停特效：底色/边框本就是强调蓝，再叠一层
+                    // 描边只会显得脏；强调色按钮靠颜色本身表达主次。
                     let write_resp = ui
                         .add_enabled_ui(has_xml, |ui| btn_style(ui, "💾 写入 XML", false))
                         .inner;
-                    hover_outline(ui, &write_resp, C_ACCENT);
                     if write_resp.clicked() {
                         self.confirm_write = true;
                     }
 
-                    // 右侧分割线 + 关于
+                    // 右侧分割线 + 关于（与「导入/导出 mess.lst」同一套样式）
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
