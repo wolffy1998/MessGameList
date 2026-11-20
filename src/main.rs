@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use eframe::egui;
 // egui_extras 不再使用 TableBuilder（其列分配在该环境异常），改为手写虚拟滚动表格
-use mess_hanhua_tool::hanhua::{self, Entry};
+use mess_gamelist::hanhua::{self, Entry};
 
 // ============================================================
 // 专业浅色配色体系（参考 VS Code / JetBrains 浅色主题）
@@ -32,6 +32,8 @@ const C_BORDER: egui::Color32     = egui::Color32::from_rgb(218, 220, 224);
 const C_BORDER_STRONG: egui::Color32 = egui::Color32::from_rgb(180, 185, 190);
 // 工具栏次级按钮底色（置顶/还原/导入/导出/关于共用同一个值，保证外观完全一致）
 const C_BTN_BG: egui::Color32      = egui::Color32::from_rgb(230, 230, 230);
+// 工具栏按钮悬停外框（黑灰中性色，不用强调蓝）
+const C_HOVER_BORDER: egui::Color32 = egui::Color32::from_rgb(88, 91, 96);
 // 状态栏
 const C_STATUS_OK_BG: egui::Color32 = egui::Color32::from_rgb(240, 248, 240);
 const C_STATUS_ERR_BG: egui::Color32 = egui::Color32::from_rgb(255, 245, 245);
@@ -329,7 +331,7 @@ impl App {
 }
 
 // ============================================================
-// 主操作按钮（写入 XML）：固定底色 + 固定边框，悬停只看 hover_outline() 的外框
+// 主操作按钮（写入 XML）：固定底色 + 固定边框，悬停只叠一层浮起阴影
 // ============================================================
 fn btn_style(ui: &mut egui::Ui, text: impl Into<String>, is_danger: bool) -> egui::Response {
     let fill = if is_danger { C_DANGER } else { C_ACCENT };
@@ -339,7 +341,7 @@ fn btn_style(ui: &mut egui::Ui, text: impl Into<String>, is_danger: bool) -> egu
         egui::Button::new(egui::RichText::new(text).color(text_color))
             .fill(fill)
             .stroke(egui::Stroke::new(1.0, stroke))
-            .corner_radius(5.0),
+            .corner_radius(0.0),
     )
 }
 
@@ -589,12 +591,12 @@ fn dialog_btn(text: &str, kind: BtnKind) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).size(13.0).color(fg).strong())
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, stroke))
-        .corner_radius(5.0)
+        .corner_radius(0.0)
         .min_size(egui::vec2(92.0, 32.0))
 }
 
 // ============================================================
-// 统一按钮悬停反馈：外框，而不是下层底色
+// 统一按钮悬停反馈：轻微浮起（下层阴影）＋ 外框，而不是下层底色
 // ============================================================
 /// 指针是否真的落在该控件的矩形内。
 ///
@@ -608,51 +610,133 @@ fn pointer_over(response: &egui::Response) -> bool {
 
 /// 悬停反馈：在控件外侧描一圈边框。
 ///
-/// 全程序只有这一种悬停/选中反馈：控件自身的底色、边框、圆角都是固定值，
-/// 不随悬停变化，从而杜绝 egui 默认 `hovered.bg_fill` 整块换色导致的串扰。
+/// 控件自身的底色、边框、圆角都是固定值，不随悬停变化，
+/// 从而杜绝 egui 默认 `hovered.bg_fill` 整块换色导致的串扰。
 fn hover_outline(ui: &egui::Ui, response: &egui::Response, color: egui::Color32) {
     if !pointer_over(response) {
         return;
     }
     ui.painter().rect_stroke(
         response.rect.expand(1.5),
-        5.0,
+        0.0,
         egui::Stroke::new(1.5, color),
         egui::StrokeKind::Middle,
     );
 }
 
-/// 普通工具栏按钮（次级操作）：固定底色 + 固定边框，悬停只看 `hover_outline()` 的外框。
+// 悬停浮起投影参数：(纵向偏移, 模糊半径, 黑色透明度)
+const HOVER_SHADOW_SUBTLE: (i8, u8, u8) = (2, 8, 40);
+// 主操作按钮悬停的放大尺寸（每边外扩的像素）
+const HOVER_SCALE_PX: f32 = 2.0;
+
+/// 悬停浮起效果：在按钮下层垫一块投影，制造「被抬起」的观感。
+fn hover_shadow(rect: egui::Rect) -> egui::Shape {
+    let (offset_y, blur, alpha) = HOVER_SHADOW_SUBTLE;
+    egui::epaint::Shadow {
+        offset: [0, offset_y],
+        blur,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(alpha),
+    }
+    .as_shape(rect, 0.0)
+    .into()
+}
+
+/// 主操作按钮的悬停放大：在按钮下层画一块「同色、向外多一圈」的底，
+/// 按钮本体压在上面，合起来就是一整块被放大——纯视觉放大，
+/// 不参与布局，所以不会推挤相邻按钮。
+fn hover_scale(rect: egui::Rect) -> egui::Shape {
+    egui::epaint::RectShape::new(
+        rect.expand(HOVER_SCALE_PX),
+        0.0,
+        C_ACCENT,
+        egui::Stroke::new(1.0, C_ACCENT),
+        egui::StrokeKind::Middle,
+    )
+    .into()
+}
+
+/// 次级按钮悬停入口：先由调用方用 `Shape::Noop` 占一个绘制槽位，
+/// 悬停时再 `Painter::set` 回填阴影——阴影必须排在按钮之前，
+/// 否则半透明投影会盖住按钮底色与文字。
+fn toolbar_hover(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    shadow_slot: egui::layers::ShapeIdx,
+) {
+    if !pointer_over(response) {
+        return;
+    }
+    ui.painter().set(shadow_slot, hover_shadow(response.rect));
+    hover_outline(ui, response, C_HOVER_BORDER);
+}
+
+/// 主操作按钮悬停入口：同样先占槽位，再回填放大底。
+fn primary_hover(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    shadow_slot: egui::layers::ShapeIdx,
+) {
+    if !response.enabled() || !pointer_over(response) {
+        return;
+    }
+    ui.painter().set(shadow_slot, hover_scale(response.rect));
+}
+
+/// 普通工具栏按钮（次级操作）：固定底色 + 固定边框，悬停浮起 + 黑灰外框。
 fn toolbar_btn(text: &str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text).color(C_TEXT))
         .fill(C_BTN_BG)
         .stroke(egui::Stroke::new(1.0, C_BORDER))
-        .corner_radius(5.0)
+        .corner_radius(0.0)
+}
+
+/// 次级工具栏按钮（置顶/还原/导入/导出/关于）：悬停即有轻微浮起 + 黑灰外框。
+fn toolbar_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let resp = ui.add_enabled(enabled, toolbar_btn(text));
+    toolbar_hover(ui, &resp, slot);
+    resp
+}
+
+/// 主操作工具栏按钮（写入 XML）：悬停时整块放大一圈，不叠外框、不用投影。
+fn primary_toolbar_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let resp = ui.add_enabled_ui(enabled, |ui| btn_style(ui, text, false)).inner;
+    primary_hover(ui, &resp, slot);
+    resp
+}
+
+/// 全局浅色视觉（主程序与回归测试共用，保证测试环境和真实界面一致）。
+fn apply_visuals(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = C_BG;
+    visuals.window_fill = C_BG_PANEL;
+    visuals.widgets.noninteractive.bg_fill = C_BG_PANEL;
+    visuals.widgets.inactive.bg_fill = C_BG_PANEL;
+    // 四种状态统一 1.0 边框宽度：egui 会用 bg_stroke.width 反推按钮内边距，
+    // 宽度不一致会让按钮在悬停时被撑大/挤动相邻按钮。
+    // expansion 必须归零：egui 只在 hovered/active 套用 outer_margin，
+    // 非零时按钮悬停会改变自身尺寸，把相邻按钮整体推移 2px。
+    for w in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+    ] {
+        w.bg_stroke = egui::Stroke::new(1.0, C_BORDER);
+        w.expansion = 0.0;
+    }
+    visuals.override_text_color = Some(C_TEXT);
+    visuals.faint_bg_color = C_BG_ROW_B;
+    visuals.extreme_bg_color = C_BG;
+    visuals.hyperlink_color = C_ACCENT;
+    ctx.set_visuals(visuals);
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // ---- 浅色全局视觉 ----
-        let mut visuals = egui::Visuals::light();
-        visuals.panel_fill = C_BG;
-        visuals.window_fill = C_BG_PANEL;
-        visuals.widgets.noninteractive.bg_fill = C_BG_PANEL;
-        visuals.widgets.inactive.bg_fill = C_BG_PANEL;
-        // 四种状态统一 1.0 边框宽度：egui 会用 bg_stroke.width 反推按钮内边距，
-        // 宽度不一致会让按钮在悬停时被撑大/挤动相邻按钮。
-        for w in [
-            &mut visuals.widgets.noninteractive,
-            &mut visuals.widgets.inactive,
-            &mut visuals.widgets.hovered,
-            &mut visuals.widgets.active,
-        ] {
-            w.bg_stroke = egui::Stroke::new(1.0, C_BORDER);
-        }
-        visuals.override_text_color = Some(C_TEXT);
-        visuals.faint_bg_color = C_BG_ROW_B;
-        visuals.extreme_bg_color = C_BG;
-        visuals.hyperlink_color = C_ACCENT;
-        ui.ctx().set_visuals(visuals);
+        apply_visuals(ui.ctx());
 
         // ============================================================
         // 顶部工具栏 — 所有元素垂直居中对齐
@@ -782,14 +866,12 @@ impl eframe::App for App {
                     let has_xml = self.selected_file.is_some() && !self.entries.is_empty();
 
                     // 置顶、还原
-                    let r = ui.add_enabled(has_xml, toolbar_btn("📌 置顶"));
-                    hover_outline(ui, &r, C_ACCENT);
+                    let r = toolbar_button(ui, has_xml, "📌 置顶");
                     if r.clicked() {
                         self.pin_up();
                     }
                     ui.add_space(4.0);
-                    let r = ui.add_enabled(has_xml, toolbar_btn("↩ 还原"));
-                    hover_outline(ui, &r, C_ACCENT);
+                    let r = toolbar_button(ui, has_xml, "↩ 还原");
                     if r.clicked() {
                         self.restore_order();
                     }
@@ -800,8 +882,7 @@ impl eframe::App for App {
                     ui.add_space(6.0);
 
                     // 导入 mess.lst
-                    let r = ui.add_enabled(has_xml, toolbar_btn("📥 导入 mess.lst"));
-                    hover_outline(ui, &r, C_ACCENT);
+                    let r = toolbar_button(ui, has_xml, "📥 导入 mess.lst");
                     if r.clicked() {
                         self.preview_import();
                         self.confirm_import = true;
@@ -809,8 +890,7 @@ impl eframe::App for App {
                     ui.add_space(4.0);
 
                     // 导出 mess.lst
-                    let r = ui.add_enabled(has_xml, toolbar_btn("📤 导出 mess.lst"));
-                    hover_outline(ui, &r, C_ACCENT);
+                    let r = toolbar_button(ui, has_xml, "📤 导出 mess.lst");
                     if r.clicked() {
                         self.preview_export();
                         self.confirm_export = true;
@@ -822,11 +902,9 @@ impl eframe::App for App {
                     ui.add_space(6.0);
 
                     // 写入XML（蓝色强调按钮，无 XML 时禁用）
-                    // 刻意不加任何悬停特效：底色/边框本就是强调蓝，再叠一层
-                    // 描边只会显得脏；强调色按钮靠颜色本身表达主次。
-                    let write_resp = ui
-                        .add_enabled_ui(has_xml, |ui| btn_style(ui, "💾 写入 XML", false))
-                        .inner;
+                    // 不叠悬停外框：底色/边框本就是强调蓝，再叠一层描边只会显得脏，
+                    // 只用下层阴影做「轻微浮起」。
+                    let write_resp = primary_toolbar_button(ui, has_xml, "💾 写入 XML");
                     if write_resp.clicked() {
                         self.confirm_write = true;
                     }
@@ -835,8 +913,7 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    let about_resp = ui.add(toolbar_btn("关于"));
-                    hover_outline(ui, &about_resp, C_ACCENT);
+                    let about_resp = toolbar_button(ui, true, "关于");
                     if about_resp.clicked() {
                         self.show_about_dialog = true;
                     }
@@ -1443,6 +1520,14 @@ impl eframe::App for App {
 mod hover_outline_test {
     use super::*;
 
+    /// 与主程序一致的测试上下文（空字体 + 同一套全局视觉）。
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+        apply_visuals(&ctx);
+        ctx
+    }
+
     /// 与顶部工具栏保持同构的控件序列
     fn build_toolbar(ui: &mut egui::Ui, has_xml: bool) -> Vec<(&'static str, egui::Response)> {
         let mut probes: Vec<(&'static str, egui::Response)> = Vec::new();
@@ -1456,39 +1541,33 @@ mod hover_outline_test {
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
-            probes.push(("置顶", ui.add_enabled(has_xml, toolbar_btn("📌 置顶"))));
+            probes.push(("置顶", toolbar_button(ui, has_xml, "📌 置顶")));
             ui.add_space(4.0);
-            probes.push(("还原", ui.add_enabled(has_xml, toolbar_btn("↩ 还原"))));
+            probes.push(("还原", toolbar_button(ui, has_xml, "↩ 还原")));
             ui.add_space(4.0);
-            probes.push((
-                "导入",
-                ui.add_enabled(has_xml, toolbar_btn("📥 导入 mess.lst")),
-            ));
+            probes.push(("导入", toolbar_button(ui, has_xml, "📥 导入 mess.lst")));
             ui.add_space(4.0);
-            probes.push((
-                "导出",
-                ui.add_enabled(has_xml, toolbar_btn("📤 导出 mess.lst")),
-            ));
+            probes.push(("导出", toolbar_button(ui, has_xml, "📤 导出 mess.lst")));
             ui.add_space(4.0);
-            let write = ui
-                .add_enabled_ui(has_xml, |ui| btn_style(ui, "💾 写入 XML", false))
-                .inner;
-            probes.push(("写入XML", write));
+            probes.push(("写入XML", primary_toolbar_button(ui, has_xml, "💾 写入 XML")));
             ui.add_space(4.0);
-            probes.push(("关于", ui.add(toolbar_btn("关于"))));
+            probes.push(("关于", toolbar_button(ui, true, "关于")));
         });
         probes
     }
 
+    /// 测试只关心布局与绘制结果，不上传纹理；
+    /// egui 0.36 要求显式丢弃 `TexturesDelta`，否则 Drop 时 panic。
     fn run_frame(
         ctx: &egui::Context,
         input: egui::RawInput,
         has_xml: bool,
     ) -> Vec<(&'static str, egui::Response)> {
         let out = std::cell::RefCell::new(Vec::<(&'static str, egui::Response)>::new());
-        let _ = ctx.run_ui(input, |ui| {
+        let mut output = ctx.run_ui(input, |ui| {
             *out.borrow_mut() = build_toolbar(ui, has_xml);
         });
+        output.textures_delta.clear();
         out.into_inner()
     }
 
@@ -1501,8 +1580,7 @@ mod hover_outline_test {
     /// 指针依次落在每个按钮上（包括按钮之间的空隙），
     /// 断言任一时刻至多只有一个按钮会被画外框。
     fn assert_hover_isolated(has_xml: bool) {
-        let ctx = egui::Context::default();
-        ctx.set_fonts(egui::FontDefinitions::empty());
+        let ctx = test_ctx();
 
         let frame1 = run_frame(&ctx, egui::RawInput::default(), has_xml);
         let targets: Vec<(&'static str, egui::Rect)> =
@@ -1533,6 +1611,118 @@ mod hover_outline_test {
         assert_hover_isolated(false);
         // 已选择 XML：全部可用
         assert_hover_isolated(true);
+    }
+
+    /// 跑一帧，把指针停在名为 `target` 的按钮中心，返回该帧的响应与绘制结果。
+    fn hover_frame(
+        ctx: &egui::Context,
+        target: &str,
+    ) -> (Vec<(&'static str, egui::Response)>, egui::FullOutput) {
+        let frame1 = run_frame(ctx, egui::RawInput::default(), true);
+        let rect = frame1
+            .iter()
+            .find(|(n, _)| *n == target)
+            .map(|(_, r)| r.rect)
+            .unwrap_or_else(|| panic!("工具栏中应有「{target}」"));
+
+        let mut probes: Vec<(&'static str, egui::Response)> = Vec::new();
+        let mut out = ctx.run_ui(input_with_pointer(rect.center()), |ui| {
+            probes = build_toolbar(ui, true);
+        });
+        out.textures_delta.clear();
+        (probes, out)
+    }
+
+    fn button_rect(probes: &[(&'static str, egui::Response)], name: &str) -> egui::Rect {
+        probes
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, r)| r.rect)
+            .unwrap_or_else(|| panic!("工具栏中应有「{name}」"))
+    }
+
+    fn rect_shapes(out: &egui::FullOutput) -> Vec<(egui::Rect, egui::Color32)> {
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some((r.rect, r.fill)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 悬停「写入 XML」时整块放大一圈（同色外扩），不使用投影，
+    /// 且不改变其他按钮的矩形（纯视觉放大，不参与布局）。
+    #[test]
+    fn primary_hover_scales_without_moving_neighbors() {
+        let ctx = test_ctx();
+
+        // 首帧的文字度量还没稳定，先跑一帧预热，再取基准布局
+        run_frame(&ctx, egui::RawInput::default(), true);
+        let base = run_frame(&ctx, egui::RawInput::default(), true);
+        let (probes, out) = hover_frame(&ctx, "写入XML");
+        let write_rect = button_rect(&probes, "写入XML");
+
+        let rects = rect_shapes(&out);
+        // 放大层与按钮本体同色，取面积最大的一块作为放大层
+        let biggest_accent = rects
+            .iter()
+            .filter(|(_, fill)| *fill == C_ACCENT)
+            .map(|(r, _)| *r)
+            .max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap())
+            .expect("应有强调色底");
+        assert_eq!(
+            biggest_accent,
+            write_rect.expand(HOVER_SCALE_PX),
+            "悬停放大层应每边外扩 {HOVER_SCALE_PX}px"
+        );
+
+        // 主按钮悬停不使用投影
+        let shadow_fill = egui::Color32::from_black_alpha(HOVER_SHADOW_SUBTLE.2);
+        assert!(
+            rects.iter().all(|(_, fill)| *fill != shadow_fill),
+            "「写入 XML」悬停不应用投影"
+        );
+
+        // 其他按钮矩形保持原样
+        for (name, r1) in &base {
+            if *name == "写入XML" {
+                continue;
+            }
+            assert_eq!(
+                r1.rect,
+                button_rect(&probes, name),
+                "悬停「写入 XML」不应改变「{name}」的位置"
+            );
+        }
+    }
+
+    /// 悬停「导出」时只给它自己垫一块阴影，其他按钮不受影响。
+    #[test]
+    fn secondary_hover_shadow_stays_under_hovered_button() {
+        let ctx = test_ctx();
+
+        let (probes, out) = hover_frame(&ctx, "导出");
+        let export_rect = button_rect(&probes, "导出");
+        let rects = rect_shapes(&out);
+
+        let shadow_fill = egui::Color32::from_black_alpha(HOVER_SHADOW_SUBTLE.2);
+        let shadows: Vec<egui::Rect> = rects
+            .iter()
+            .filter(|(_, fill)| *fill == shadow_fill)
+            .map(|(r, _)| *r)
+            .collect();
+        assert_eq!(shadows.len(), 1, "次级按钮悬停应只有一块投影");
+        // Shadow::as_shape 只做平移（spread = 0），中心应正好下移投影偏移量
+        let expected = export_rect.translate(egui::vec2(0.0, HOVER_SHADOW_SUBTLE.0 as f32));
+        assert_eq!(shadows[0].center(), expected.center());
+
+        // 次级按钮不产生放大层：强调色矩形只有「写入 XML」本体那一块
+        assert_eq!(
+            rects.iter().filter(|(_, fill)| *fill == C_ACCENT).count(),
+            1,
+            "次级按钮悬停不应产生放大层"
+        );
     }
 }
 

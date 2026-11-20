@@ -1786,7 +1786,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mess-hanhua-tool"
+name = "mess-gamelist"
 version = "0.1.0"
 dependencies = [
  "eframe",
