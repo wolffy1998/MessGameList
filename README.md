@@ -1,16 +1,16 @@
 # MessGameList
 
-> MAME MESS 软件列表（`hash` 目录下的 XML）汉化工具
-> Rust + [egui](https://github.com/emilk/egui) 桌面 GUI
-
-读取 MAME `hash` 目录下的软件列表 XML，以表格展示每条记录的 `name` / `description`，在
-`Rename` 列填写中文，再把译文写回 XML，或汇总到 `mess.lst` 公共列表供其他 XML 复用。
-
----
+为 MAME MESS 软件列表 XML（hash 目录）批量填写中文译名，并写回 XML 或汇总到 `mess.lst` 的桌面工具。
 
 
 
-## 功能详解
+## 一、概述
+
+工具读取 MAME `hash` 目录下的软件列表 XML，以表格展示每条记录的 `name` / `description`，在 `Rename` 列填写中文，再把译文写回 XML，或汇总到 `mess.lst` 公共列表供其他 XML 复用。
+
+
+
+## 二、界面与操作
 
 ### 工具栏
 
@@ -76,50 +76,27 @@ a2600__pacman	吃豆人
   - 自然序：数字片段按数值比较（`s2` 在 `s10` 前），其余忽略大小写；数值相同但写法不同（`s02` / `s2`）再按原串比较，保证全序。
   - 当前已填译文为 0 时「确认导出」禁用；`mess.lst` 不存在时导出会自动创建。
 
----
 
 
-
-## 项目结构
+## 三、源码目录
 
 ```
 MessGameList/
-├── Cargo.toml        # 包名 mess-gamelist；[[bin]] name = "MessGameList"
-├── Cargo.lock        # 已提交，保证依赖版本一致
+├── Cargo.toml       # 依赖声明与包信息
+├── Cargo.lock       # 依赖版本锁定（已提交，保证各机版本一致）
+├── src/
+│   ├── main.rs      # GUI 界面与交互：工具栏、虚拟滚动表格、确认框
+│   ├── lib.rs       # 库入口，仅导出 hanhua 模块
+│   └── hanhua.rs    # 核心逻辑：XML 解析与写回、mess.lst 读写
 ├── LICENSE
-├── README.md
-└── src/
-    ├── lib.rs        # crate 入口，导出 hanhua 模块
-    ├── hanhua.rs     # 核心逻辑：XML 解析/写回、mess.lst 读写、自然排序（含单元测试）
-    └── main.rs       # egui GUI：工具栏、表格、弹窗、悬停效果（含回归测试）
+└── README.md
 ```
 
-> `hash/`、`mess.lst`、`target/` 都不属于源码：前者是运行时数据，后者是构建产物（已在 `.gitignore` 中）。
-
----
+`hanhua.rs` 提供核心函数（解析 XML、写回 `description` 与 `alt_title`、读写 `mess.lst`）；`main.rs` 负责界面与操作，通过 `mess_gamelist::hanhua` 调用核心逻辑。
 
 
 
-### 依赖管理
-
-依赖存放在**全局本地仓库** `~/.cargo/registry`，**不会**复制进项目目录：
-
-```
-~/.cargo/registry/cache/   下载的 .crate 压缩包（跨项目共享）
-~/.cargo/registry/src/     解压后的 crate 源码
-项目/target/               仅存放编译产物
-```
-
-- `Cargo.lock` 已提交，任何人 clone 后编译得到的依赖版本完全一致
-- 缓存命中后**不再联网**，可离线构建：`cargo build --release --offline`
-- `Cargo.toml` 声明的依赖：`eframe`、`egui_extras`、`encoding_rs`、`rfd`、`roxmltree`；
-  当前代码实际直接使用的是 `eframe`（egui）、`roxmltree`、`encoding_rs`
-
----
-
-
-
-## 构建与开发
+## 四、项目构建
 
 ### 环境要求
 
@@ -133,6 +110,7 @@ MessGameList/
 | `cargo build --release` | 构建发布版 → `target/release/MessGameList.exe`               |
 | `cargo build`           | 构建调试版 → `target/debug/MessGameList.exe`                 |
 | `cargo run --release`   | 构建并运行                                                   |
+| `cargo build --release --offline` | 依赖已缓存时离线构建                                 |
 | `cargo test`            | 运行全部测试：`hanhua.rs` 8 个单元测试 + `main.rs` 3 个悬停回归测试 |
 | `cargo clippy`          | 静态检查                                                     |
 | `cargo tree --depth 1`  | 只看直接依赖                                                 |
@@ -140,6 +118,8 @@ MessGameList/
 | `cargo update`          | 升级依赖版本                                                 |
 | `cargo vendor`          | 把依赖复制进项目 `vendor/`（离线 / 内网构建）                |
 | `cargo clean`           | 清理 `target/`                                               |
+
+> `Cargo.lock` 已提交，依赖版本一致；依赖存放在全局 `~/.cargo/registry` 跨项目共享，缓存命中后不再联网。
 
 > GNU 工具链下运行 `cargo test` 链接测试程序时，除了 `gcc`，还需要 MinGW 的 `binutils`/导入库在 PATH 上，
 > 否则会报 `cannot find -lshlwapi` 或 `dlltool.exe: program not found`；把 MinGW 的 `bin` 目录整体加入 PATH 即可。
@@ -163,8 +143,6 @@ rustc -vV | Select-String host
 > ⚠️ **用哪条路线由 Rust 工具链本身决定，与 PATH 上有什么无关。**
 > PATH 里有 `cl.exe` 不会让 GNU 工具链改用 MSVC；PATH 里有 `gcc.exe` 也不会让 MSVC 工具链改用 GCC。
 
-
-
 #### 路线 A：GNU（MinGW / MSYS2）
 
 ```powershell
@@ -178,25 +156,25 @@ cargo build --release
 
 `gcc` 在 PATH 上就能编译，不需要任何配置文件。
 
-##### gcc 不在 PATH 时，如何单独指定路径
+**指定链接器路径的几种方式：**
 
 若 `cargo build` 报 ``linker `cc` not found``，以下四种方式任选，**按优先级从高到低**：
 
-##### 1️⃣ `RUSTFLAGS` 环境变量（优先级最高，对当前终端生效）
+1️⃣ `RUSTFLAGS` 环境变量（优先级最高，对当前终端生效）
 
 ```powershell
 $env:RUSTFLAGS = "-C linker=C:\mingw64\bin\gcc.exe"
 cargo build --release
 ```
 
-##### 2️⃣ `CARGO_TARGET_<TRIPLE>_LINKER` 环境变量
+2️⃣ `CARGO_TARGET_<TRIPLE>_LINKER` 环境变量
 
 ```powershell
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "C:\mingw64\bin\gcc.exe"
 cargo build --release
 ```
 
-##### 3️⃣ Cargo 配置文件（推荐，可固化到项目里）
+3️⃣ Cargo 配置文件（推荐，可固化到项目里）
 
 **项目级**——新建 `.cargo\config.toml`，只影响本项目：
 
@@ -218,7 +196,7 @@ linker = "C:\\mingw64\\bin\\gcc.exe"
 > `.cargo/config.toml` 已在 `.gitignore` 中，不会提交到仓库，避免写死他人机器的路径。
 > 注意：只配 `linker` 只解决 `cc not found`，不解决 `-lshlwapi` / `dlltool`，后者仍需 MinGW `bin` 在 PATH 上。
 
-##### 4️⃣ 临时把目录加进当前终端的 PATH（最省事）
+4️⃣ 临时把目录加进当前终端的 PATH（最省事）
 
 ```powershell
 $env:PATH += ";C:\mingw64\bin"
@@ -229,11 +207,11 @@ cargo build --release
 
 > **优先级**：`RUSTFLAGS` > `CARGO_TARGET_<TRIPLE>_LINKER` > `.cargo/config.toml`（项目级优先于用户级）> PATH 自动查找
 
-> MSVC 路线同理，通常直接在 **Developer PowerShell for VS** 中编译即可；也可手动指定：
->
-> ```powershell
-> $env:RUSTFLAGS = "-C linker=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\<版本号>\bin\Hostx64\x64\link.exe"
-> ```
+MSVC 路线通常直接在 **Developer PowerShell for VS** 中编译即可；也可手动指定：
+
+```powershell
+$env:RUSTFLAGS = "-C linker=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\<版本号>\bin\Hostx64\x64\link.exe"
+```
 
 
 
@@ -249,7 +227,7 @@ cargo build --release
 
 
 
-##  运行时目录
+## 五、运行时目录
 
 程序只从**当前工作目录**找数据，目录结构必须为：
 
@@ -267,11 +245,9 @@ cargo build --release
   界面会显示空状态提示。
 - `hash/` 在启动时扫描一次，运行中新放入的 XML 需要重启后才会出现在下拉框。
 
----
 
 
-
-## 数据格式
+## 六、数据格式
 
 ### XML 写回规则
 
@@ -297,10 +273,8 @@ cargo build --release
 | 写出顺序 | 整张表按第一列自然序排序 |
 | 字段清理 | 译文中的制表符 / 回车 / 换行折叠为单个空格，避免破坏列结构 |
 
----
 
 
-
-## 许可证
+## 七、许可证
 
 见 [LICENSE](LICENSE)。
