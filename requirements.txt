@@ -1,0 +1,4 @@
+# 项目依赖（运行 + 构建），全部安装在 .venv 内，不使用全局环境
+PyQt5==5.15.11
+charset-normalizer==3.5.3
+pyinstaller==6.22.3

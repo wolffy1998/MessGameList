@@ -1,0 +1,26 @@
+{
+  "systems": [
+    {
+      "id": "big",
+      "name": "BIG",
+      "icon": "",
+      "roms_dir": "C:\\Users\\11921\\AppData\\Local\\Temp\\tmpg0bwfxbv\\roms",
+      "lst_file": "",
+      "lst_filter_only": false,
+      "emulators": [
+        {
+          "name": "Mesen",
+          "path": "C:/e/m.exe",
+          "command": "\"{emulator}\" \"{rom}\""
+        }
+      ]
+    }
+  ],
+  "last_system_id": "",
+  "window": {
+    "width": 1100,
+    "height": 720
+  },
+  "column_widths": [],
+  "favorites": []
+}

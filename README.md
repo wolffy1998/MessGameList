@@ -1,143 +1,183 @@
-# MessGameList
+# Oneline
 
 ## 一、项目概述
 
-MessGameList 是一款基于 Rust / eframe 的桌面工具，用于批量为 MAME MESS 软件列表 XML 填写中文译名，并把结果写回原 XML 或汇总到 `mess.lst` 公共译名表，供其他 XML 导入复用。程序只从当前工作目录读写数据，因此 exe 需与 `hash\`、`mess.lst` 放在同一目录。
+Oneline 是一个用 **Python 3.14 + PyQt5** 开发的桌面游戏前端，把多个平台（FC、SFC、PS1 等）的 ROM 汇总到一张统一列表中：按平台配置 ROM 目录与模拟器，可选加载 `.lst` / `.glt` 映射表把 ROM 文件名替换为中文游戏名，支持实时搜索、收藏、平台多选筛选；单击模拟器标签或双击行即可用指定模拟器启动游戏，启动后前端自动隐藏，模拟器退出后自动恢复。窗口尺寸、列宽、平台配置与收藏记录都写回 `config.json`。界面使用 Qt 默认主题，图标资源（默认平台图标 + 多尺寸 exe 图标）放在 `resources/`；高分屏下按物理分辨率自动放大字体与行高。
+
 
 
 
 ## 二、工作原理
 
-**运行目录约定**
+**目录约定**
 
-```
-<运行目录>/
-├── MessGameList.exe
-├── hash/                 ← MAME 的 hash 目录，内含 *.xml 软件列表
-│   ├── a2600.xml
-│   └── ...
-└── mess.lst              ← 可选；导入时不存在按 0 条处理，导出时自动创建
-```
+按打包产物实现，各路径约定如下：
 
-`hash\` 只在程序启动时扫描一次；运行期间新放入的 XML 需重启程序才会出现。仓库不附带 `hash\` 与 `mess.lst`，直接 `cargo run` 时若项目根目录没有 `hash\`，界面会显示空状态。
+| 路径 | 用途 |
+| --- | --- |
+| `<产物目录>/Oneline.exe` | 无控制台窗口的可执行文件，双击启动 |
+| `<产物目录>/config.json` | 用户配置：平台、模拟器、窗口大小、列宽、收藏都写在这里；首次运行时自动生成 |
+| `<产物目录>/lib/` | PyInstaller 解包目录：PyQt5、charset_normalizer、Python 运行时与 DLL，运行时只读 |
+| `<产物目录>/lib/resources/` | 随包打入的图标资源：`app.ico`（程序图标）、`default_icon.png`（默认平台图标） |
+
+配置写在 exe 同目录而不是 `lib/` 内，这样更新程序时用户配置不会丢失；`lib/` 每次启动都会重新解包，不要把个人文件放进去。源码运行时则读取 `main.py` 同目录的 `config.json`，环境变量 `EMUFRONT_CONFIG` 可临时把配置指向其他路径，便于调试。
 
 
 
-**主流程**
+
+**处理流程**
+
+整体是一条「读配置 → 扫描 ROM → 名称映射 → 过滤 → 渲染表格 → 启动模拟器 → 隐藏 → 轮询 → 恢复」的流水线：
 
 ```mermaid
 flowchart TD
-    A["启动：以当前目录为基准<br/>扫描 ./hash/*.xml"] --> B{"列表为空?"}
-    B -- 是 --> E["界面显示空状态"]
-    B -- 否 --> C["选择 XML<br/>roxmltree 解析（允许 DTD）"]
-    C --> D["表格展示 name / description / Rename<br/>用户逐条填写中文"]
-    D --> F["可选：导入 mess.lst<br/>只填充空白项，不覆盖已有译文"]
-    F --> G{"完成方式"}
-    G -- 写入 XML --> H["按字节区间替换 description<br/>保留其余字节；同步 alt_title"]
-    G -- 导出 mess.lst --> I["清理同前缀旧条目 → 追加译文<br/>清理字段 → 自然序排序 → 整表重写"]
-    H --> OK["完成，弹出结果提示"]
-    I --> OK
+    A["AppConfig.load() 读取 config.json"] --> B["scan_games() 扫描各平台 ROM 目录"]
+    B --> C["parse_lst() 解析 .lst/.glt 映射表<br/>ROM 文件名 → 中文游戏名"]
+    C --> D["_all_pairs：全部 (平台, 游戏) 组合"]
+    D --> E{"搜索 / 收藏 / 平台筛选"}
+    E --> F["_visible_pairs → _fill_table() 渲染表格"]
+    F --> G{"双击行 / 单击标签 / 右键菜单"}
+    G --> H["替换命令占位符 → subprocess.Popen 启动模拟器"]
+    H --> I["前端 hide()，QTimer 每 400ms 轮询进程"]
+    I --> J{"所有游戏进程结束?"}
+    J -- 否 --> I
+    J -- 是 --> K["前端 show() 并激活窗口"]
+    K --> L["closeEvent：保存窗口大小与列宽"]
 ```
 
-**XML 写回机制**
+**关键机制**
 
-| 项目 | 行为 |
+1. **ROM 扫描**：`scan_games()` 按文件名排序遍历平台的 `roms_dir`，跳过隐藏文件；未配置映射时显示去后缀的文件名。
+2. **映射表解析**：`.lst` / `.glt` 每行以 Tab 分列，**只取前两列**（ROM 名、显示名），`//` 开头的注释行和空行忽略；匹配时去路径/后缀并转小写，未匹配到则显示原文件名。
+3. **编码识别**：优先级为 UTF-8 BOM → 严格 UTF-8 → 文件头 `// codepage=N` 提示 → 候选编码（GB18030 / Big5 / Shift-JIS / CP1252 / Latin-1）按中文字符打分选优 → `charset_normalizer` 兜底；勾选「仅显示列表中匹配的 ROM」时，未映射的 ROM 不进列表。
+4. **扫描缓存**：每个平台按 `(roms_dir, lst_file, mtime, size)` 生成签名，签名不变则复用扫描结果；点「刷新」或设置变更后清空缓存全量重扫。
+5. **过滤与防抖**：搜索框用单次定时器防抖，避免大量 ROM 时每次按键都重建表格；收藏筛选与平台筛选互斥，平台筛选可多选并按同名分组去重。
+6. **表格渲染**：三列为「游戏名称 / 平台 / 模拟器」，图标并入名称列、收藏项名称标红；模拟器列用 `EmulatorTagsDelegate`（`QStyledItemDelegate`）**自绘**彩色药丸标签而非 `cellWidget`，避免上千行时创建大量 QWidget；标签颜色由模拟器名的 FNV-1a 哈希从 10 色色板（含粉色）中取色，同一行撞色时顺延，避免整列都是蓝色；整表只读、选中整行、无焦点框，列宽可拖动并持久化。
+7. **启动命令**：模板占位符为 `{emulator}`、`{rom}`、`{romname}`、`{romstem}`、`{romdir}`，默认 `"{emulator}" "{rom}"`；相对路径以程序目录 `APP_DIR` 为基准转绝对路径，模拟器进程的 `cwd` 设为模拟器所在目录，ROM 相对路径相应转换；`shell=False` 启动，500ms 内忽略重复启动请求。
+8. **进程监控**：启动后隐藏窗口，400ms 定时轮询 `poll()`，全部进程结束后恢复窗口；右键菜单在多模拟器时展开子菜单，并可添加/移除收藏（收藏状态即时标红并保存）。
+9. **高分屏适配**：`enable_high_dpi()` 必须在 `QApplication` 创建前调用；`get_scale()` 根据屏幕物理宽度与设备像素比给出舒适系数（4K 约 1.30、2K 约 1.15、1080P 为 1.0），用于字体、图标、行高和最小窗口尺寸。
+10. **持久化时机**：关闭窗口保存窗口大小与列宽，切换收藏立即保存，导入设置变更后保存平台配置；配置不存在时自动生成默认配置。
+
+
+
+**状态栏口径**
+
+状态栏文案由 `_apply_filter()` 统一计算，含义如下：
+
+| 显示 | 含义 |
 | --- | --- |
-| 编码 | 必须 UTF-8（可带 BOM）；BOM 写回时保留 |
-| 解析 | `roxmltree` 以 `allow_dtd` 打开 MAME 的 `<!DOCTYPE …>`；收集所有带 `name` 属性的 `<software>` |
-| 定位 | 用节点的字节区间替换 `<description>` 整体文本，缩进、换行、注释、DTD、属性写法等其余字节原样保留 |
-| 转义 | 译文中的 `& < > " '` 做 XML 转义 |
-| alt_title | 译文以 `(日本)` 或 `（日本）` 结尾时，去掉结尾括号并更新同节点 `<info name="alt_title" value="…"/>` 的 `value`；没有该节点则不改动 |
-| 跳过 | 无 `<description>` 子节点或译文为空的条目不计入写入数 |
+| `共 N 个游戏` | 无搜索/筛选时，`_all_pairs` 的总数；N 为 0 时显示「未找到 ROM，请检查 ROMS 目录或点击刷新」 |
+| `显示 N / M` | 有搜索关键词、收藏筛选或平台筛选时，N 为 `_visible_pairs` 命中数，M 为总数 |
 
+例如配置了两台平台、每台各 3 个 ROM，搜索命中 2 个时显示 `显示 2 / 6`；清除条件后恢复为 `共 6 个游戏`。
 
-
-**mess.lst 机制**
-
-`mess.lst` 是 Tab 分隔的两列文本，第一列为键、第二列为译文：
-
-```
-a2600__adventp	冒险岛
-a2600__pacman	吃豆人
-```
-
-- **键格式**：`XML文件名去扩展名__name`（双下划线），例如 `a2600.xml` 中 `name="adventp"` → `a2600__adventp`；导入时兼容旧版单下划线键。
-- **导入**：读取 UTF-8（自动去 BOM），失败回退 GBK；跳过空行与无 Tab 的行，两列去除首尾空白；只填充 `Rename` 为空的条目。
-- **导出**：删除第一列以 `文件名__` 开头的旧条目 → 追加当前 XML 已填译文 → 字段中的 Tab / 回车 / 换行折叠为空格 → 按第一列自然序排序 → 以 UTF-8（无 BOM）、CRLF 行尾整体重写。
-- **自然序**：数字片段按数值比较（`s2` 排在 `s10` 前），其余忽略大小写；数值相同但写法不同（`s02` / `s2`）再按原串比较，保证排序稳定。
 
 
 
 ## 三、源码结构
 
 ```
-MessGameList/
-├── Cargo.toml       # 包信息与依赖声明
-├── Cargo.lock       # 依赖版本锁定（已提交，保证各机构建一致）
-├── src/
-│   ├── main.rs      # GUI、交互、确认框与虚拟滚动表格
-│   ├── lib.rs       # 库入口，仅导出 hanhua 模块
-│   └── hanhua.rs    # 核心逻辑：XML 解析/写回、mess.lst 读写
-├── LICENSE
-└── README.md
+Oneline/
+├── README.md        # 本文件：项目说明
+├── requirements.txt # 运行 + 构建依赖声明
+├── scripts/                 # 辅助脚本目录
+│   ├── build.bat            # 自动化打包脚本
+│   └── clean.bat            # 清理缓存和构建产物的脚本
+├── src/             # 源码目录
+│   ├── main.py          # 主程序源码
+│   ├── config.py # 配置读写
+│   ├── game_list.py # ROM 扫描
+│   ├── main_window.py # 主窗口
+│   ├── settings_dialog.py # 导入设置
+│   ├── ui_scale.py # 高分屏适配
+│   ├── config.json # 用户配置
+│   └── resources/ # 图标资源
+└── releases/        # 已构建的发布版
 ```
+
+各源码文件按职责划分：
 
 | 文件 | 关键内容 |
 | --- | --- |
-| `main.rs` | `App` 负责目录扫描、XML 加载、置顶/还原、导入导出预览与确认；`eframe::App::ui` 绘制工具栏、表格和弹窗；包含 3 个按钮悬停回归测试 |
-| `hanhua.rs` | `list_xml_files` / `parse_xml_file` / `write_translations` 处理 XML；`read_mess_list` / `write_mess_list` / `sort_mess_list` / `natural_cmp` / `make_key` 处理译名表；包含 8 个单元测试 |
-| `lib.rs` | `pub mod hanhua;`，供 `main.rs` 以 `mess_gamelist::hanhua` 调用 |
+| `main.py` | `enable_high_dpi()` → `QApplication` → 字体与窗口图标 → `MainWindow.show()` |
+| `config.py` | 三个 dataclass 的 `to_dict` / `from_dict`、`save` / `load`、`icon_path()`、收藏管理，路径常量 `APP_DIR` / `CONFIG_PATH` / `DEFAULT_ICON` / `APP_ICON` |
+| `game_list.py` | `GameEntry`、`scan_games()`、`parse_lst()`、`read_text_auto()`、`_detect_codepage()` |
+| `ui_scale.py` | `enable_high_dpi()`、`get_scale()` |
+| `main_window.py` | `MainWindow`（工具栏/表格/筛选菜单/启动/右键菜单/进程监视）、`EmulatorTagsDelegate`（标签自绘与 hover）、`EmulatorTagButton` / `EmulatorTagsWidget`、`NoFocusDelegate` |
+| `settings_dialog.py` | `ImportSettingsDialog`（Tab 对话框）、`SettingsPage`（新增/编辑平台）、`SystemManagerPage`（平台管理）、`EmulatorRow`（模拟器配置行） |
+
+调用关系为 `main.py → ui_scale.py, config.py, main_window.py`；`main_window.py → config.py, game_list.py, settings_dialog.py, ui_scale.py`；`settings_dialog.py → config.py`。
+
+图形界面布局（`MainWindow._build_ui`）自上而下分为三块：
+
+| 区块 | 内容 |
+| --- | --- |
+| 工具栏 | 「导入设置」（Tab 对话框：新增/编辑平台 + 平台管理）、「刷新」，右侧为搜索框（输入防抖）与平台筛选按钮（我的收藏 / 全部平台 / 多平台勾选） |
+| 游戏表格 | 三列：游戏名称（内嵌平台图标，收藏项标红）/ 平台 / 模拟器（彩色药丸标签由委托自绘）；整表只读、选中整行、无焦点框，列宽可拖动并持久化，最后一列自动拉伸 |
+| 状态栏 | 只显示游戏数量：无筛选时为 `共 N 个游戏`，有筛选时为 `显示 N / M` |
+
 
 
 
 ## 四、依赖说明
 
+所有第三方依赖都写在 `requirements.txt` 中，并由 `build.bat` 统一安装到项目级 `.venv`，不使用全局 Python 环境中的包。Python 标准库无需安装：
+
 | 类别 | 内容 |
 | --- | --- |
-| GUI | `eframe 0.36.2`（含 egui），负责窗口、事件循环与控件绘制；表格为手写虚拟滚动 |
-| XML | `roxmltree 0.21.1`，解析 XML 并提供节点字节区间，支持 `allow_dtd` |
-| 编码 | `encoding_rs 0.8.42`，用于 `mess.lst` 的 GBK 回退解码 |
-| 其他声明 | `egui_extras 0.36.2`、`rfd 0.17.2` 在 `Cargo.toml` 中声明，当前源码未直接调用 |
-| 标准库 | `std::fs` / `std::collections::HashMap` / `std::path` 等，无额外运行依赖 |
-| 版本管理 | `Cargo.lock` 已提交；依赖缓存在全局 `~/.cargo/registry`，跨项目共享 |
+| 运行依赖 | `PyQt5==5.15.11`（图形界面，含 `PyQt5-Qt5` 5.15.2、`PyQt5_sip` 12.20.1）、`charset-normalizer==3.5.3`（配置文件与 `.lst` 映射表的编码兜底识别） |
+| 构建依赖 | `pyinstaller==6.22.3`（one-folder 打包；含 `pyinstaller-hooks-contrib`、`altgraph`、`pefile`、`pywin32-ctypes`、`packaging` 等间接依赖） |
+| 标准库 | `os` `sys` `json` `uuid` `re` `subprocess` `dataclasses` `typing` |
+| Python | 3.9 及以上（项目实测 3.14.10）；使用 dataclass 与类型注解 |
+| 字体 / 平台 | UI 使用 Windows 自带的 `Microsoft YaHei UI`；高分屏属性与 exe 图标面向 Windows 平台 |
+
+`requirements.txt` 内容：
+
+```text
+# 项目依赖（运行 + 构建），全部安装在 .venv 内，不使用全局环境
+PyQt5==5.15.11
+charset-normalizer==3.5.3
+pyinstaller==6.22.3
+```
+
+PyQt5 负责界面与高分屏缩放；`charset-normalizer` 缺失时程序仍可运行，编码识别退化为 UTF-8 / GB18030 等候选编码逐个尝试。模拟器本体不随程序分发，由用户在界面中配置其可执行文件路径。
+
 
 
 
 ## 五、项目构建
 
-Rust 1.85+（edition 2024）；Windows / macOS / Linux 均可编译，发布目标为 Windows 10+ 可执行文件。
+双击运行 `scripts\build.bat`（或在 `scripts` 目录执行 `build.bat`）（或命令行执行）。脚本按 4 步执行，每步打印 `[n/4]` 进度；各步骤自动继续执行，不需要按回车，构建前不删除既有产物，需要清理时手动运行 `scripts\clean.bat`：
 
-Windows 上 Rust 本身不含 C 代码，但生成 `.exe` 需要系统链接器；先用 `rustc -vV | Select-String host` 确认工具链：
+1. 检查全局 `python`，缺失时报错并结束；
+2. 若 `.venv` 不存在，用 `python -m venv .venv` 创建隔离的虚拟环境；
+3. 用 `.venv` 内的 pip 一次性安装 `requirements.txt` 中的全部依赖（PyQt5 + charset-normalizer + PyInstaller）；
+4. 调用 `.venv` 内的 PyInstaller 以 one-folder 方式打包，入口为 `src\main.py`：
 
-| host | 链接器 | 需要安装 |
-| --- | --- | --- |
-| `x86_64-pc-windows-gnu` | `gcc.exe` → `ld.exe` | MinGW-w64 / MSYS2 |
-| `x86_64-pc-windows-msvc` | `link.exe` | Visual Studio / Build Tools |
+```bat
+--clean --noconfirm --windowed --name "Oneline"
+--contents-directory "lib"
+--icon "%CD%\src\resources\app.ico"  ← 用绝对路径，因为 --specpath build 会改变相对路径基准
+--add-data "%CD%\resources;resources"
+--distpath dist     ← 产物输出到 dist\Oneline\
+--workpath build    ← 中间产物在 build\
+--specpath build    ← 自动生成的 spec 也放在 build\
+```
 
-> 链接器路线由 Rust 工具链决定，与 PATH 中是否存在 `cl.exe` / `gcc.exe` 无关。GNU 路线需把 MinGW 的 `bin` 目录加入 PATH；MSVC 路线在 **Developer PowerShell for VS** 中编译即可。未配置 gcc PATH 时会报 `linker 'cc' not found`，此时指定链接器的优先级为：`RUSTFLAGS` > `CARGO_TARGET_<TRIPLE>_LINKER` > `.cargo/config.toml` > PATH 查找。`.cargo/config.toml` 含本机绝对路径，已在 `.gitignore` 中排除。
+任一步骤失败会打印错误原因，脚本直接跳到结尾；**末尾执行 `cmd /k`，CMD 窗口保持打开**，方便查看完整输出，输入 `exit` 或点右上角关闭即可退出。
 
-> GNU 工具链下即便 `gcc` 已在 PATH，运行 `cargo test` 链接测试程序时还需 MinGW 的 `binutils` / 导入库也在 PATH 上，否则会报 `cannot find -lshlwapi` 或 `dlltool.exe: program not found`。
-
-
-
-**常用命令**
-
-| 命令 | 说明 |
-| --- | --- |
-| `cargo build --release` | 构建发布版 |
-| `cargo build` | 构建调试版 |
-| `cargo run --release` | 构建并运行 |
-| `cargo test` | 运行 8 个核心逻辑单元测试 + 3 个悬停回归测试 |
-| `cargo clippy` | 静态检查 |
-| `cargo build --release --offline` | 依赖已缓存时离线构建 |
-| `cargo vendor` | 将依赖复制进 `vendor/`，用于离线 / 内网构建 |
-| `cargo clean` | 清理 `target/` |
+**产物位置**：`dist\Oneline\Oneline.exe`，双击即可启动图形界面。依赖库与图标资源位于同目录的 `lib\`（图标在 `lib\resources\`），首次运行后在 exe 旁生成 `config.json`（用户可直接编辑）。`--windowed` 表示无控制台窗口；`--contents-directory "lib"` 把依赖收进 `lib` 子目录，保持输出目录整洁。构建前须保证 `src\resources\app.ico` 与 `src\resources\default_icon.png` 存在，否则打包或运行时图标会缺失。PyInstaller 的 `.spec` 文件由脚本在 `build\` 中自动生成，不需要手动维护，也不会留在根目录。调试时可用 `set EMUFRONT_CONFIG=<临时路径>` 指定独立配置，避免污染正式配置。
 
 
 
-**产物位置**
+清理脚本 `scripts\clean.bat` 按 3 步删除构建产物：
 
-- 发布版：`target/release/MessGameList.exe`（体积更小、运行更快，日常使用推荐）
-- 调试版：`target/debug/MessGameList.exe`（带调试符号，用于排查问题）
-- exe 需与 `hash\`、`mess.lst` 放在同一目录才能正常工作；把对应 exe 复制到 MAME 的 hash 所在目录即可使用，无需复制其他文件。
-- `cargo run --release` 也会生成发布版 exe，但以项目根目录作为工作目录运行。
+1. 删除 `dist`（含 `Oneline.exe`）；
+2. 删除 `build` 中间目录（含自动生成的 spec）；
+3. 删除根目录与 `src\` 下的 `*.spec`、`__pycache__` 与 `*.pyc`。
+
+`scripts\clean.bat --all` 会额外删除 `.venv`（下次构建时自动重建）。脚本**保留**源码、`config.json`、`resources\`、本文档以及 `.venv`（未加 `--all` 时）。
+与 `build.bat` 一样不设中途暂停，结尾停留 CMD 窗口。
+
+
+两个 `.bat` 文件需保持 **UTF-8 编码 + CRLF 换行 + `chcp 65001`**，源码与本文档为 UTF-8。
